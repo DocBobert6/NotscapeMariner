@@ -1,0 +1,675 @@
+package net.notscape.browser.emu
+
+import net.notscape.browser.data.AppStore
+
+/**
+ * Core options (Phase J, J7): the settings each libretro
+ * core actually accepts, taken from the cores' own option
+ * tables (2026-10-24 research, scratch/j7/CORE_OPTIONS.md).
+ * Values are the exact strings the cores expect via
+ * GET_VARIABLE; [labels] holds display text only where it
+ * differs from the value. Options are stored per CONSOLE
+ * (a GB page and a GBA page can set different mGBA color
+ * correction) under coreOpt:<console>:<key>, and apply
+ * from the next game launched. The tables here are the
+ * meaningful options, not every static key: visibility
+ * gates, runtime-populated lists, Sega CD keys and
+ * light-gun/mouse options are left out by design, and the
+ * tables are structured to grow.
+ */
+data class CoreOption(
+    val key: String,
+    val label: String,
+    val values: List<String>,
+    val labels: Map<String, String> = emptyMap(),
+    val default: String
+) {
+    fun display(value: String): String = labels[value] ?: value
+}
+
+object CoreOptions {
+    private fun range(a: Int, b: Int, step: Int): List<String> =
+        (a..b step step).map { it.toString() }
+
+    private fun opt(
+        key: String,
+        label: String,
+        values: List<String>,
+        default: String,
+        labels: Map<String, String> = emptyMap()
+    ) = CoreOption(key, label, values, labels, default)
+
+    private val mgba = listOf(
+        opt(
+            "mgba_gb_model", "Game Boy Model",
+            listOf(
+                "Autodetect", "Game Boy", "Super Game Boy",
+                "Game Boy Color", "Super Game Boy Color",
+                "Game Boy Advance"
+            ),
+            "Autodetect"
+        ),
+        opt(
+            "mgba_use_bios", "Use BIOS File if Found",
+            listOf("ON", "OFF"), "ON"
+        ),
+        opt(
+            "mgba_skip_bios", "Skip BIOS Intro",
+            listOf("OFF", "ON"), "OFF"
+        ),
+        opt(
+            "mgba_gb_colors_preset", "Hardware Preset Palettes",
+            listOf("0", "1", "2", "3"), "0",
+            mapOf(
+                "0" to "Default Game Boy preset",
+                "1" to "Game Boy Color presets only",
+                "2" to "Super Game Boy presets only",
+                "3" to "Any available presets"
+            )
+        ),
+        opt(
+            "mgba_sgb_borders", "Use Super Game Boy Borders",
+            listOf("ON", "OFF"), "ON"
+        ),
+        opt(
+            "mgba_color_correction", "Color Correction",
+            listOf("OFF", "GBA", "GBC", "Auto"), "OFF",
+            mapOf(
+                "GBA" to "Game Boy Advance",
+                "GBC" to "Game Boy Color"
+            )
+        ),
+        opt(
+            "mgba_interframe_blending", "Interframe Blending",
+            listOf(
+                "OFF", "mix", "mix_smart",
+                "lcd_ghosting", "lcd_ghosting_fast"
+            ),
+            "OFF",
+            mapOf(
+                "mix" to "Simple",
+                "mix_smart" to "Smart",
+                "lcd_ghosting" to "LCD Ghosting (Accurate)",
+                "lcd_ghosting_fast" to "LCD Ghosting (Fast)"
+            )
+        ),
+        opt(
+            "mgba_audio_low_pass_filter", "Audio Low Pass Filter",
+            listOf("disabled", "enabled"), "disabled"
+        ),
+        opt(
+            "mgba_audio_low_pass_range", "Audio Filter Level",
+            range(5, 95, 5), "60"
+        ),
+        opt(
+            "mgba_allow_opposing_directions",
+            "Allow Opposing Directional Input",
+            listOf("no", "yes"), "no"
+        ),
+        opt(
+            "mgba_idle_optimization", "Idle Loop Removal",
+            listOf(
+                "Remove Known", "Detect and Remove", "Don't Remove"
+            ),
+            "Remove Known"
+        ),
+        opt(
+            "mgba_frameskip", "Frameskip",
+            listOf(
+                "disabled", "auto", "auto_threshold", "fixed_interval"
+            ),
+            "disabled",
+            mapOf(
+                "auto" to "Auto",
+                "auto_threshold" to "Auto (Threshold)",
+                "fixed_interval" to "Fixed Interval"
+            )
+        ),
+        opt(
+            "mgba_frameskip_threshold", "Frameskip Threshold (%)",
+            range(15, 60, 3), "33"
+        ),
+        opt(
+            "mgba_frameskip_interval", "Frameskip Interval",
+            range(0, 10, 1), "0"
+        )
+    )
+
+    private val fceumm = listOf(
+        opt(
+            "fceumm_region", "Region",
+            listOf("Auto", "NTSC", "PAL", "Dendy"), "Auto"
+        ),
+        opt(
+            "fceumm_game_genie", "Game Genie Add-On",
+            listOf("disabled", "enabled"), "disabled"
+        ),
+        opt(
+            "fceumm_aspect", "Aspect Ratio",
+            listOf("8:7 PAR", "4:3", "PP"), "8:7 PAR",
+            mapOf("PP" to "Pixel Perfect")
+        ),
+        opt(
+            "fceumm_overscan_h_left", "Crop Horizontal Left Overscan",
+            listOf("0", "4", "8", "12", "16"), "0"
+        ),
+        opt(
+            "fceumm_overscan_h_right", "Crop Horizontal Right Overscan",
+            listOf("0", "4", "8", "12", "16"), "0"
+        ),
+        opt(
+            "fceumm_overscan_v_top", "Crop Vertical Top Overscan",
+            listOf("0", "4", "8", "12", "16", "20", "24"), "8"
+        ),
+        opt(
+            "fceumm_overscan_v_bottom", "Crop Vertical Bottom Overscan",
+            listOf("0", "4", "8", "12", "16", "20", "24"), "8"
+        ),
+        opt(
+            "fceumm_palette", "Color Palette",
+            listOf(
+                "default", "asqrealc", "restored-wii-vc", "wii-vc",
+                "rgb", "yuv-v3", "unsaturated-final",
+                "sony-cxa2025as-us", "pal", "bmf-final2",
+                "bmf-final3", "smooth-fbx", "composite-direct-fbx",
+                "pvm-style-d93-fbx", "ntsc-hardware-fbx",
+                "nes-classic-fbx-fs", "nescap", "wavebeam",
+                "digital-prime-fbx", "magnum-fbx", "smooth-v2-fbx",
+                "nes-classic-fbx", "royaltea", "mugicha", "raw",
+                "custom"
+            ),
+            "default",
+            mapOf(
+                "default" to "Default",
+                "asqrealc" to "AspiringSquire's Real",
+                "restored-wii-vc" to "Restored Wii VC",
+                "wii-vc" to "Wii Virtual Console",
+                "rgb" to "Nintendo RGB PPU",
+                "yuv-v3" to "FBX's YUV-V3",
+                "unsaturated-final" to "FBX's Unsaturated-Final",
+                "sony-cxa2025as-us" to "Sony CXA2025AS US",
+                "pal" to "PAL",
+                "bmf-final2" to "BMF's Final 2",
+                "bmf-final3" to "BMF's Final 3",
+                "smooth-fbx" to "FBX's Smooth",
+                "composite-direct-fbx" to "FBX's Composite Direct",
+                "pvm-style-d93-fbx" to "FBX's PVM Style D93",
+                "ntsc-hardware-fbx" to "FBX's NTSC Hardware",
+                "nes-classic-fbx-fs" to "FBX's NES Classic (fixed)",
+                "nescap" to "RGBSource's NESCAP",
+                "wavebeam" to "nakedarthur's Wavebeam",
+                "digital-prime-fbx" to "FBX's Digital Prime",
+                "magnum-fbx" to "FBX's Magnum",
+                "smooth-v2-fbx" to "FBX's Smooth V2",
+                "nes-classic-fbx" to "FBX's NES Classic",
+                "royaltea" to "Royaltea (PVM-2530)",
+                "mugicha" to "Mugicha",
+                "raw" to "Raw",
+                "custom" to "Custom"
+            )
+        ),
+        opt(
+            "fceumm_ntsc_filter", "NTSC Filter",
+            listOf(
+                "disabled", "composite", "svideo", "rgb", "monochrome"
+            ),
+            "disabled",
+            mapOf("svideo" to "S-Video")
+        ),
+        opt(
+            "fceumm_sndrate_hint", "Sound Samplerate (Hint)",
+            listOf("Auto", "32KHz", "44KHz", "48KHz", "96KHz"), "Auto"
+        ),
+        opt(
+            "fceumm_sndquality", "Sound Quality",
+            listOf("Low", "High", "Very High"), "Low"
+        ),
+        opt(
+            "fceumm_sndlowpass", "Audio RF Filter",
+            listOf("disabled", "enabled"), "disabled"
+        ),
+        opt(
+            "fceumm_sndvolume", "Master Volume",
+            range(0, 10, 1), "7"
+        ),
+        opt(
+            "fceumm_apu_1", "Audio Channel 1 (Square 1)",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "fceumm_apu_2", "Audio Channel 2 (Square 2)",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "fceumm_apu_3", "Audio Channel 3 (Triangle)",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "fceumm_apu_4", "Audio Channel 4 (Noise)",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "fceumm_apu_5", "Audio Channel 5 (PCM)",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "fceumm_turbo_enable", "Turbo Enable",
+            listOf("None", "Player 1", "Player 2", "Both"), "None"
+        ),
+        opt(
+            "fceumm_turbo_delay", "Turbo Delay (in frames)",
+            listOf("1", "2", "3", "5", "10", "15", "30", "60"), "3"
+        ),
+        opt(
+            "fceumm_up_down_allowed", "Allow Opposing Directions",
+            listOf("disabled", "enabled"), "disabled"
+        ),
+        opt(
+            "fceumm_nospritelimit", "No Sprite Limit",
+            listOf("disabled", "enabled"), "disabled"
+        ),
+        opt(
+            "fceumm_overclocking", "Overclock",
+            listOf("disabled", "2x-Postrender", "2x-VBlank"), "disabled"
+        ),
+        opt(
+            "fceumm_ramstate", "RAM Power-On Fill",
+            listOf("fill \$ff", "fill \$00", "random"), "fill \$ff",
+            mapOf("fill \$ff" to "\$FF", "fill \$00" to "\$00")
+        )
+    )
+
+    private val snes9x = listOf(
+        opt(
+            "snes9x_region", "Console Region",
+            listOf("auto", "ntsc", "pal"), "auto",
+            mapOf("auto" to "Auto", "ntsc" to "NTSC", "pal" to "PAL")
+        ),
+        opt(
+            "snes9x_aspect", "Preferred Aspect Ratio",
+            listOf("4:3", "4:3 scaled", "uncorrected", "auto", "ntsc", "pal"),
+            "4:3",
+            mapOf(
+                "4:3 scaled" to "4:3 (Preserved)",
+                "uncorrected" to "Uncorrected",
+                "auto" to "Auto", "ntsc" to "NTSC", "pal" to "PAL"
+            )
+        ),
+        opt(
+            "snes9x_overscan", "Crop Overscan",
+            listOf("enabled", "disabled", "auto"), "enabled",
+            mapOf("auto" to "Auto")
+        ),
+        opt(
+            "snes9x_gfx_hires", "Enable Hi-Res Mode",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "snes9x_hires_blend", "Hi-Res Blending",
+            listOf("disabled", "merge", "blur"), "disabled",
+            mapOf("merge" to "Merge", "blur" to "Blur")
+        ),
+        opt(
+            "snes9x_blargg", "Blargg NTSC Filter",
+            listOf(
+                "disabled", "monochrome", "rf", "composite",
+                "s-video", "rgb"
+            ),
+            "disabled",
+            mapOf("s-video" to "S-Video")
+        ),
+        opt(
+            "snes9x_audio_interpolation", "Audio Interpolation",
+            listOf("gaussian", "cubic", "sinc", "none", "linear"),
+            "gaussian",
+            mapOf(
+                "gaussian" to "Gaussian", "cubic" to "Cubic",
+                "sinc" to "Sinc", "none" to "None",
+                "linear" to "Linear"
+            )
+        ),
+        opt(
+            "snes9x_up_down_allowed", "Allow Opposing Directions",
+            listOf("disabled", "enabled"), "disabled"
+        ),
+        opt(
+            "snes9x_overclock_superfx", "SuperFX Overclocking",
+            listOf(
+                "50%", "60%", "70%", "80%", "90%", "100%",
+                "150%", "200%", "250%", "300%", "350%", "400%",
+                "450%", "500%"
+            ),
+            "100%"
+        ),
+        opt(
+            "snes9x_overclock_cycles", "Reduce Slowdown (Hack, Unsafe)",
+            listOf("disabled", "light", "compatible", "max"), "disabled",
+            mapOf(
+                "light" to "Light", "compatible" to "Compatible",
+                "max" to "Max"
+            )
+        ),
+        opt(
+            "snes9x_reduce_sprite_flicker",
+            "Reduce Flickering (Hack, Unsafe)",
+            listOf("disabled", "enabled"), "disabled"
+        ),
+        opt(
+            "snes9x_randomize_memory", "Randomize Memory (Unsafe)",
+            listOf("disabled", "enabled"), "disabled"
+        ),
+        opt(
+            "snes9x_block_invalid_vram_access",
+            "Block Invalid VRAM Access",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "snes9x_echo_buffer_hack", "Echo Buffer Hack (Unsafe)",
+            listOf("disabled", "enabled"), "disabled"
+        ),
+        opt(
+            "snes9x_layer_1", "Show Layer 1",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "snes9x_layer_2", "Show Layer 2",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "snes9x_layer_3", "Show Layer 3",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "snes9x_layer_4", "Show Layer 4",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "snes9x_layer_5", "Show Sprite Layer",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "snes9x_gfx_clip", "Enable Graphic Clip Windows",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "snes9x_gfx_transp", "Enable Transparency Effects",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "snes9x_sndchan_1", "Enable Sound Channel 1",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "snes9x_sndchan_2", "Enable Sound Channel 2",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "snes9x_sndchan_3", "Enable Sound Channel 3",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "snes9x_sndchan_4", "Enable Sound Channel 4",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "snes9x_sndchan_5", "Enable Sound Channel 5",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "snes9x_sndchan_6", "Enable Sound Channel 6",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "snes9x_sndchan_7", "Enable Sound Channel 7",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "snes9x_sndchan_8", "Enable Sound Channel 8",
+            listOf("enabled", "disabled"), "enabled"
+        )
+    )
+
+    private val genesisPlusGx = listOf(
+        opt(
+            "genesis_plus_gx_system_hw", "System Hardware",
+            listOf(
+                "auto", "sg-1000", "sg-1000 II",
+                "sg-1000 II + ram ext.", "mark-III", "master system",
+                "master system II", "game gear",
+                "mega drive / genesis"
+            ),
+            "auto",
+            mapOf(
+                "auto" to "Auto",
+                "sg-1000 II + ram ext." to "SG-1000 II + RAM Ext.",
+                "mark-III" to "Mark III",
+                "master system" to "Master System",
+                "master system II" to "Master System II",
+                "game gear" to "Game Gear",
+                "mega drive / genesis" to "Mega Drive/Genesis"
+            )
+        ),
+        opt(
+            "genesis_plus_gx_region_detect", "System Region",
+            listOf("auto", "ntsc-u", "pal", "ntsc-j"), "auto",
+            mapOf(
+                "auto" to "Auto", "ntsc-u" to "NTSC-U",
+                "pal" to "PAL", "ntsc-j" to "NTSC-J"
+            )
+        ),
+        opt(
+            "genesis_plus_gx_vdp_mode", "Force VDP Mode",
+            listOf("auto", "60hz", "50hz"), "auto",
+            mapOf(
+                "auto" to "Disabled", "60hz" to "NTSC (60Hz)",
+                "50hz" to "PAL (50Hz)"
+            )
+        ),
+        opt(
+            "genesis_plus_gx_bios", "System Boot ROM",
+            listOf("disabled", "enabled"), "disabled"
+        ),
+        opt(
+            "genesis_plus_gx_lock_on", "Cartridge Lock-On",
+            listOf(
+                "disabled", "game genie", "action replay (pro)",
+                "sonic & knuckles"
+            ),
+            "disabled",
+            mapOf(
+                "game genie" to "Game Genie",
+                "action replay (pro)" to "Action Replay (Pro)",
+                "sonic & knuckles" to "Sonic & Knuckles"
+            )
+        ),
+        opt(
+            "genesis_plus_gx_aspect_ratio", "Core-Provided Aspect Ratio",
+            listOf("auto", "NTSC PAR", "PAL PAR", "4:3", "Uncorrected"),
+            "auto",
+            mapOf("auto" to "Auto")
+        ),
+        opt(
+            "genesis_plus_gx_overscan", "Borders",
+            listOf("disabled", "top/bottom", "left/right", "full"),
+            "disabled",
+            mapOf(
+                "top/bottom" to "Top/Bottom",
+                "left/right" to "Left/Right", "full" to "Full"
+            )
+        ),
+        opt(
+            "genesis_plus_gx_left_border",
+            "Hide Master System Side Borders",
+            listOf(
+                "disabled", "left border", "left & right borders"
+            ),
+            "disabled",
+            mapOf(
+                "left border" to "Left Border Only",
+                "left & right borders" to "Left & Right Borders"
+            )
+        ),
+        opt(
+            "genesis_plus_gx_gg_extra", "Game Gear Extended Screen",
+            listOf("disabled", "enabled"), "disabled"
+        ),
+        opt(
+            "genesis_plus_gx_blargg_ntsc_filter", "Blargg NTSC Filter",
+            listOf(
+                "disabled", "monochrome", "composite", "svideo", "rgb"
+            ),
+            "disabled",
+            mapOf("svideo" to "S-Video")
+        ),
+        opt(
+            "genesis_plus_gx_lcd_filter", "LCD Ghosting Filter",
+            listOf("disabled", "enabled"), "disabled"
+        ),
+        opt(
+            "genesis_plus_gx_render", "Interlaced Mode 2 Output",
+            listOf("single field", "double field"), "single field",
+            mapOf(
+                "single field" to "Single Field",
+                "double field" to "Double Field"
+            )
+        ),
+        opt(
+            "genesis_plus_gx_frameskip", "Frameskip",
+            listOf("disabled", "auto", "manual"), "disabled",
+            mapOf("auto" to "Auto", "manual" to "Manual")
+        ),
+        opt(
+            "genesis_plus_gx_frameskip_threshold",
+            "Frameskip Threshold (%)",
+            range(15, 60, 3), "33"
+        ),
+        opt(
+            "genesis_plus_gx_ym2413", "Master System FM (YM2413)",
+            listOf("auto", "disabled", "enabled"), "auto",
+            mapOf("auto" to "Auto")
+        ),
+        opt(
+            "genesis_plus_gx_ym2413_core",
+            "Master System FM (YM2413) Core",
+            listOf("mame", "nuked"), "mame",
+            mapOf("mame" to "MAME", "nuked" to "Nuked")
+        ),
+        opt(
+            "genesis_plus_gx_ym2612", "Mega Drive/Genesis FM",
+            listOf(
+                "mame (ym2612)", "mame (asic ym3438)",
+                "mame (enhanced ym3438)", "nuked (ym2612)",
+                "nuked (ym3438)"
+            ),
+            "mame (ym2612)",
+            mapOf(
+                "mame (ym2612)" to "MAME (YM2612)",
+                "mame (asic ym3438)" to "MAME (ASIC YM3438)",
+                "mame (enhanced ym3438)" to "MAME (Enhanced YM3438)",
+                "nuked (ym2612)" to "Nuked (YM2612)",
+                "nuked (ym3438)" to "Nuked (YM3438)"
+            )
+        ),
+        opt(
+            "genesis_plus_gx_sound_output", "Sound Output",
+            listOf("stereo", "mono"), "stereo",
+            mapOf("stereo" to "Stereo", "mono" to "Mono")
+        ),
+        opt(
+            "genesis_plus_gx_audio_filter", "Audio Filter",
+            listOf("disabled", "low-pass", "EQ"), "disabled",
+            mapOf("low-pass" to "Low-Pass")
+        ),
+        opt(
+            "genesis_plus_gx_lowpass_range", "Low-Pass Filter %",
+            range(5, 95, 5), "60"
+        ),
+        opt(
+            "genesis_plus_gx_psg_preamp", "PSG Preamp Level",
+            range(0, 200, 5), "150"
+        ),
+        opt(
+            "genesis_plus_gx_fm_preamp", "FM Preamp Level",
+            range(0, 200, 5), "100"
+        ),
+        opt(
+            "genesis_plus_gx_gun_input", "Light Gun Input",
+            listOf("lightgun", "touchscreen"), "lightgun",
+            mapOf(
+                "lightgun" to "Light Gun",
+                "touchscreen" to "Touchscreen"
+            )
+        ),
+        opt(
+            "genesis_plus_gx_gun_cursor", "Show Light Gun Crosshair",
+            listOf("disabled", "enabled"), "disabled"
+        ),
+        opt(
+            "genesis_plus_gx_invert_mouse", "Invert Mouse Y-Axis",
+            listOf("disabled", "enabled"), "disabled"
+        ),
+        opt(
+            "genesis_plus_gx_no_sprite_limit",
+            "Remove Per-Line Sprite Limit",
+            listOf("disabled", "enabled"), "disabled"
+        ),
+        opt(
+            "genesis_plus_gx_enhanced_vscroll",
+            "Enhanced per-tile vertical scroll",
+            listOf("disabled", "enabled"), "disabled"
+        ),
+        opt(
+            "genesis_plus_gx_enhanced_vscroll_limit",
+            "Enhanced per-tile vertical scroll limit",
+            range(2, 16, 1), "8"
+        ),
+        opt(
+            "genesis_plus_gx_overclock", "CPU Speed",
+            range(100, 500, 25), "100"
+        ),
+        opt(
+            "genesis_plus_gx_force_dtack", "System Lock-Ups",
+            listOf("enabled", "disabled"), "enabled"
+        ),
+        opt(
+            "genesis_plus_gx_addr_error", "68K Address Error",
+            listOf("enabled", "disabled"), "enabled"
+        )
+    )
+
+    fun forConsole(console: String): List<CoreOption> = when (console) {
+        "gb", "gbc", "gba" -> mgba
+        "nes" -> fceumm
+        "snes" -> snes9x
+        "genesis", "sms", "gg" -> genesisPlusGx
+        else -> emptyList()
+    }
+
+    private fun settingKey(console: String, key: String) =
+        "coreOpt:$console:$key"
+
+    fun storedValue(
+        store: AppStore,
+        console: String,
+        option: CoreOption
+    ): String {
+        val raw = store.setting(settingKey(console, option.key), "")
+        return if (raw in option.values) raw else option.default
+    }
+
+    fun setValue(
+        store: AppStore,
+        console: String,
+        key: String,
+        value: String
+    ) {
+        store.putSetting(settingKey(console, key), value)
+    }
+
+    /** "key=value" pairs for the native side, which answers
+     * GET_VARIABLE from exactly this map. */
+    fun storedPairs(store: AppStore, console: String): Array<String> =
+        forConsole(console).map { option ->
+            option.key + "=" + storedValue(store, console, option)
+        }.toTypedArray()
+}

@@ -1,0 +1,154 @@
+name: Core builds
+
+# Phase M1 (0.1.0-beta.13): the emulator cores are built from pinned
+# source commits in CI instead of downloaded as prebuilt binaries.
+# The app itself does not change in this build; the workflow artifacts
+# are the deliverable, and the runtime download source is decided at M2.
+#
+# Pins are full commit SHAs, verified against the repos before this
+# file was written. Never pin a tag: tags move. When any core needs a
+# re-pin, re-pin all four together and record the run that went green.
+#
+# Build routes, each verified against the pinned tree (not assumed):
+# - mGBA: CMake, exactly as libretro's own CI builds it:
+#   -DLIBMGBA_ONLY=ON -DBUILD_LIBRETRO=ON with the NDK toolchain file.
+#   There is no Android.mk / ndk-build route for mGBA upstream.
+# - FCEUmm, Genesis Plus GX, Snes9x: ndk-build from their jni/
+#   directories (Snes9x does have libretro/jni/Android.mk).
+# ndk-build is deprecated but still ships in NDK 27; the job asserts
+# it exists and fails loudly otherwise instead of silently skipping.
+#
+# Verification per core, before upload: the output must be one ELF
+# 64-bit ARM aarch64 shared object, over 100KB, exporting the retro_*
+# entry set. Anything else fails the job with the evidence in the log.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/core-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-core:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - core: mgba
+            repo: mgba-emu/mgba
+            pin: fd9dc5c2cbf234365068855851107e762fc6211b
+            kind: cmake
+            out: mgba_libretro_android.so
+          - core: fceumm
+            repo: libretro/libretro-fceumm
+            pin: ac0d00a7fc01166f84c7bac01d1084ebfd2b865e
+            kind: ndk
+            jnidir: jni
+            out: fceumm_libretro_android.so
+          - core: snes9x
+            repo: snes9xgit/snes9x
+            pin: 1bcc369e89f08243e0a462882fb1f3e42e51de3a
+            kind: ndk
+            jnidir: libretro/jni
+            out: snes9x_libretro_android.so
+          - core: genesis_plus_gx
+            repo: libretro/Genesis-Plus-GX
+            pin: aa74d79634cd230f65cce4180e92688e53883d2f
+            kind: ndk
+            jnidir: libretro/jni
+            out: genesis_plus_gx_libretro_android.so
+
+    steps:
+      - name: Check out core source at pin
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.pin }}
+          path: core
+          fetch-depth: 0
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install NDK 27
+        run: sdkmanager "ndk;27.0.12077973"
+
+      - name: Build core
+        run: |
+          set -euo pipefail
+          NDK="$ANDROID_HOME/ndk/27.0.12077973"
+          if [ ! -d "$NDK" ]; then
+            echo "NDK dir missing: $NDK"
+            ls "$ANDROID_HOME/ndk" || true
+            exit 1
+          fi
+          if [ "${{ matrix.kind }}" = "cmake" ]; then
+            cmake -S core -B core-build \
+              -DLIBMGBA_ONLY=ON -DBUILD_LIBRETRO=ON \
+              -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+              -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-21 \
+              -DCMAKE_BUILD_TYPE=Release
+            cmake --build core-build -j"$(nproc)"
+            FOUND=$(find core-build -name "mgba_libretro.so")
+          else
+            NDK_BUILD="$NDK/ndk-build"
+            if [ ! -x "$NDK_BUILD" ]; then
+              echo "ndk-build missing from NDK 27: $NDK_BUILD"
+              exit 1
+            fi
+            if grep -qE "NDK_TOOLCHAIN_VERSION|gnustl" "core/${{ matrix.jnidir }}/Application.mk"; then
+              echo "Application.mk uses a toolchain ndk-build no longer supports"
+              cat "core/${{ matrix.jnidir }}/Application.mk"
+              exit 1
+            fi
+            cd "core/${{ matrix.jnidir }}"
+            "$NDK_BUILD" -j"$(nproc)" APP_ABI=arm64-v8a APP_PLATFORM=android-21
+            cd "$GITHUB_WORKSPACE"
+            FOUND=$(find core -path "*arm64-v8a/*.so")
+          fi
+          COUNT=$(printf "%s\n" "$FOUND" | grep -c . || true)
+          if [ "$COUNT" -ne 1 ]; then
+            echo "expected exactly one built .so, found $COUNT:"
+            printf "%s\n" "$FOUND"
+            exit 1
+          fi
+          mkdir -p out
+          cp "$FOUND" "out/${{ matrix.out }}"
+          echo "BUILT_SO=out/${{ matrix.out }}" >> "$GITHUB_ENV"
+
+      - name: Verify core
+        run: |
+          set -euo pipefail
+          SO="$BUILT_SO"
+          file "$SO"
+          file "$SO" | grep -q "ELF 64-bit.*ARM aarch64" || {
+            echo "not an ARM64 ELF: $(file "$SO")"
+            exit 1
+          }
+          SIZE=$(stat -c%s "$SO")
+          echo "size: $SIZE bytes"
+          if [ "$SIZE" -le 102400 ]; then
+            echo "core implausibly small: $SIZE bytes"
+            exit 1
+          fi
+          NM="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          EXPORTS=$("$NM" -D "$SO")
+          for sym in retro_api_version retro_get_system_info retro_get_system_av_info retro_set_environment retro_set_video_refresh retro_set_audio_sample_batch retro_set_input_poll retro_set_input_state retro_init retro_deinit retro_load_game retro_run retro_reset retro_serialize_size retro_serialize retro_unserialize retro_get_memory_data retro_get_memory_size; do
+            echo "$EXPORTS" | grep -q " $sym" || {
+              echo "missing export: $sym"
+              echo "$EXPORTS"
+              exit 1
+            }
+          done
+          echo "core=${{ matrix.core }} pin=${{ matrix.pin }} size=$SIZE sha256=$(sha256sum "$SO" | cut -d' ' -f1)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload core artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.core }}-libretro-android
+          path: ${{ env.BUILT_SO }}
+          if-no-files-found: error

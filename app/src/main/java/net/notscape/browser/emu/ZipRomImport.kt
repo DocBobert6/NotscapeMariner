@@ -1,0 +1,114 @@
+package net.notscape.browser.emu
+
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.util.zip.ZipInputStream
+
+/**
+ * Zip ROM import (beta.7): a .zip picked as a ROM, or
+ * found during a folder import, is opened in place -
+ * the zip itself is never kept, only the ROMs inside
+ * it. Entries match by extension against the
+ * supported systems; directory entries and nested
+ * zips are skipped, never recursed into. Entry paths
+ * cannot escape: only the bare file name is ever
+ * used, so a hostile "../" entry lands nowhere but
+ * the console's ROM folder. Sizes are capped (a
+ * single entry over 64MB, or 256MB total, is
+ * skipped) - these consoles' ROMs top out at 32MB.
+ */
+object ZipRomImport {
+    const val MAX_ENTRY_BYTES = 64 * 1024 * 1024
+    const val MAX_TOTAL_BYTES = 256 * 1024 * 1024
+
+    data class Result(
+        val matched: Int,
+        val skipped: Int,
+        val firstOtherSystem: String?
+    )
+
+    /**
+     * Streams [input] as a zip, calling [onEntry] with
+     * each matching ROM's storage file name, its
+     * original entry name, system and bytes. The
+     * title must come from the original name (like
+     * the single-file path, which titles from the
+     * picked display name): deriving it from the
+     * sanitized file name underscores every space
+     * and breaks cover-art lookup, which needs the
+     * No-Intro form with spaces.
+     * When [targetSystem] is set, only that system's
+     * ROMs match (single-file import); other systems'
+     * ROMs are noted in [Result.firstOtherSystem] so
+     * the caller can point at the right console page.
+     * With no target, every supported system matches
+     * (folder import).
+     */
+    fun forEachEntry(
+        input: InputStream,
+        targetSystem: String?,
+        onEntry: (
+            fileName: String,
+            displayName: String,
+            system: String,
+            bytes: ByteArray
+        ) -> Unit
+    ): Result {
+        var matched = 0
+        var skipped = 0
+        var firstOther: String? = null
+        var total = 0L
+        ZipInputStream(input).use { zip ->
+            while (true) {
+                val entry = zip.nextEntry ?: break
+                val rawName = entry.name
+                if (rawName.endsWith("/")) continue
+                val name = rawName.substringAfterLast('/')
+                if (name.isBlank()) continue
+                if (name.endsWith(".zip", ignoreCase = true)) {
+                    skipped++
+                    continue
+                }
+                val system = GameLibrary.systemForExtension(
+                    name.substringAfterLast('.', "")
+                )
+                if (system == null) {
+                    skipped++
+                    continue
+                }
+                if (targetSystem != null && system != targetSystem) {
+                    if (firstOther == null) firstOther = system
+                    skipped++
+                    continue
+                }
+                val bytes = ByteArrayOutputStream()
+                val buf = ByteArray(32 * 1024)
+                var over = false
+                while (true) {
+                    val n = zip.read(buf)
+                    if (n < 0) break
+                    total += n
+                    if (bytes.size() + n > MAX_ENTRY_BYTES ||
+                        total > MAX_TOTAL_BYTES
+                    ) {
+                        over = true
+                        break
+                    }
+                    bytes.write(buf, 0, n)
+                }
+                if (over) {
+                    skipped++
+                    continue
+                }
+                onEntry(
+                    GameLibrary.safeFileName(name),
+                    name,
+                    system,
+                    bytes.toByteArray()
+                )
+                matched++
+            }
+        }
+        return Result(matched, skipped, firstOther)
+    }
+}

@@ -1,0 +1,306 @@
+name: Core builds
+
+# Phase M1 (0.1.0-beta.13): the emulator cores are built from pinned
+# source commits in CI instead of downloaded as prebuilt binaries.
+# The app itself does not change in this build; the workflow artifacts
+# are the deliverable, and the runtime download source is decided at M2.
+#
+# Pins are full commit SHAs, verified against the repos before this
+# file was written. Never pin a tag: tags move. When any core needs a
+# re-pin, re-pin all seven together and record the run that went green.
+#
+# Build routes, each verified against the pinned tree (not assumed):
+# - mGBA: CMake, exactly as libretro's own CI builds it:
+#   -DLIBMGBA_ONLY=ON -DBUILD_LIBRETRO=ON with the NDK toolchain file.
+#   There is no Android.mk / ndk-build route for mGBA upstream.
+# - FCEUmm, Genesis Plus GX, Snes9x: ndk-build from their jni/
+#   directories (Snes9x does have libretro/jni/Android.mk).
+# - melonDS (DS): ndk-build from its jni/ directory, exactly like
+#   FCEUmm (module "retro", c++_static, no legacy toolchain flags).
+# - PicoDrive (32X): ndk-build from its jni/ directory, exactly like
+#   melonDS (module "retro"). Its CD layer and other pieces are git
+#   submodules, so the workflow inits them for this core only (the
+#   checkout step leaves them empty). Its COPYING is non-commercial, same
+#   class as Genesis Plus GX / Snes9x - the O1 licensing audit
+#   must settle it; the build itself is unaffected.
+# - SwanStation (N1): CMake, like mGBA but with no core-specific
+#   flags - this fork builds the libretro target unconditionally
+#   (there is no BUILD_LIBRETRO_CORE option here; that flag
+#   belongs to upstream DuckStation). All deps are vendored
+#   in dep/, and the Android output is
+#   swanstation_libretro_android.so (no lib prefix).
+# ndk-build is deprecated but still ships in NDK 27; the job asserts
+# it exists and fails loudly otherwise instead of silently skipping.
+#
+# Verification per core, before upload: the output must be one ELF
+# 64-bit ARM aarch64 shared object, over 100KB, exporting the retro_*
+# entry set. Anything else fails the job with the evidence in the log.
+#
+# Phase M2 (0.1.0-beta.14): the publish job runs after every green
+# matrix and publishes the seven cores plus a cores.json manifest to
+# a dedicated `cores` release in this repo - the runtime download
+# source Robert picked. The app verifies every download against
+# cores.json before loading it. The publish job downloads the matrix
+# job artifacts from the SAME run, never rebuilds, so the published
+# bytes are exactly the verified bytes. Pins below are duplicated
+# from the matrix on purpose (the job cannot read the matrix); when
+# any core is re-pinned, re-pin all seven in both places together.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/core-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-core:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - core: mgba
+            repo: mgba-emu/mgba
+            pin: fd9dc5c2cbf234365068855851107e762fc6211b
+            kind: cmake
+            findname: mgba_libretro.so
+            out: mgba_libretro_android.so
+          - core: swanstation
+            repo: libretro/swanstation
+            pin: 631f0fb31b809e0f889d7c551fe695788e39c1d3
+            kind: cmake
+            findname: swanstation_libretro_android.so
+            out: swanstation_libretro_android.so
+          - core: fceumm
+            repo: libretro/libretro-fceumm
+            pin: ac0d00a7fc01166f84c7bac01d1084ebfd2b865e
+            kind: ndk
+            jnidir: jni
+            out: fceumm_libretro_android.so
+          - core: snes9x
+            repo: snes9xgit/snes9x
+            pin: 1bcc369e89f08243e0a462882fb1f3e42e51de3a
+            kind: ndk
+            jnidir: libretro/jni
+            out: snes9x_libretro_android.so
+          - core: genesis_plus_gx
+            repo: libretro/Genesis-Plus-GX
+            pin: aa74d79634cd230f65cce4180e92688e53883d2f
+            kind: ndk
+            jnidir: libretro/jni
+            out: genesis_plus_gx_libretro_android.so
+          - core: melonds
+            repo: libretro/melonds
+            pin: 66b5d2634cd0a79030562811e6e05f5532f800ba
+            kind: ndk
+            jnidir: jni
+            out: melonds_libretro_android.so
+          - core: picodrive
+            repo: libretro/picodrive
+            pin: 1890c2932234c9d30f4cd3851d02228baae8f09e
+            kind: ndk
+            jnidir: jni
+            out: picodrive_libretro_android.so
+
+    steps:
+      - name: Check out core source at pin
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.pin }}
+          path: core
+          fetch-depth: 0
+
+      # PicoDrive only: its CD layer (pico/cd/libchdr)
+      # and other pieces are git submodules, which the
+      # checkout above leaves empty - the ndk-build
+      # then fails on the missing libchdr sources.
+      - name: Init PicoDrive submodules
+        if: matrix.core == 'picodrive'
+        run: git -C core submodule update --init --recursive
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install NDK 27
+        run: sdkmanager "ndk;27.0.12077973"
+
+      - name: Build core
+        run: |
+          set -euo pipefail
+          NDK="$ANDROID_HOME/ndk/27.0.12077973"
+          if [ ! -d "$NDK" ]; then
+            echo "NDK dir missing: $NDK"
+            ls "$ANDROID_HOME/ndk" || true
+            exit 1
+          fi
+          if [ "${{ matrix.kind }}" = "cmake" ]; then
+            # mGBA needs its own flags; SwanStation takes
+            # none (its libretro target is unconditional).
+            EXTRA=""
+            if [ "${{ matrix.core }}" = "mgba" ]; then
+              EXTRA="-DLIBMGBA_ONLY=ON -DBUILD_LIBRETRO=ON"
+            fi
+            cmake -S core -B core-build \
+              $EXTRA \
+              -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+              -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-21 \
+              -DCMAKE_BUILD_TYPE=Release
+            cmake --build core-build -j"$(nproc)"
+            FOUND=$(find core-build -name "${{ matrix.findname }}")
+          else
+            NDK_BUILD="$NDK/ndk-build"
+            if [ ! -x "$NDK_BUILD" ]; then
+              echo "ndk-build missing from NDK 27: $NDK_BUILD"
+              exit 1
+            fi
+            if grep -qE "NDK_TOOLCHAIN_VERSION|gnustl" "core/${{ matrix.jnidir }}/Application.mk"; then
+              echo "Application.mk uses a toolchain ndk-build no longer supports"
+              cat "core/${{ matrix.jnidir }}/Application.mk"
+              exit 1
+            fi
+            cd "core/${{ matrix.jnidir }}"
+            "$NDK_BUILD" -j"$(nproc)" APP_ABI=arm64-v8a APP_PLATFORM=android-21
+            cd "$GITHUB_WORKSPACE"
+            # ndk-build leaves two copies: the linked
+            # library under obj/ and the installed
+            # (stripped) copy under libs/. Only the
+            # installed copy is the artifact; matching
+            # both was the first run's failure.
+            FOUND=$(find core -path "*/libs/arm64-v8a/*.so")
+          fi
+          COUNT=$(printf "%s\n" "$FOUND" | grep -c . || true)
+          if [ "$COUNT" -ne 1 ]; then
+            echo "expected exactly one built .so, found $COUNT:"
+            printf "%s\n" "$FOUND"
+            exit 1
+          fi
+          mkdir -p out
+          cp "$FOUND" "out/${{ matrix.out }}"
+          echo "BUILT_SO=out/${{ matrix.out }}" >> "$GITHUB_ENV"
+
+      - name: Verify core
+        run: |
+          set -euo pipefail
+          SO="$BUILT_SO"
+          file "$SO"
+          file "$SO" | grep -q "ELF 64-bit.*ARM aarch64" || {
+            echo "not an ARM64 ELF: $(file "$SO")"
+            exit 1
+          }
+          SIZE=$(stat -c%s "$SO")
+          echo "size: $SIZE bytes"
+          if [ "$SIZE" -le 102400 ]; then
+            echo "core implausibly small: $SIZE bytes"
+            exit 1
+          fi
+          NM="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          EXPORTS=$("$NM" -D "$SO")
+          for sym in retro_api_version retro_get_system_info retro_get_system_av_info retro_set_environment retro_set_video_refresh retro_set_audio_sample_batch retro_set_input_poll retro_set_input_state retro_init retro_deinit retro_load_game retro_run retro_reset retro_serialize_size retro_serialize retro_unserialize retro_get_memory_data retro_get_memory_size; do
+            echo "$EXPORTS" | grep -q " $sym" || {
+              echo "missing export: $sym"
+              echo "$EXPORTS"
+              exit 1
+            }
+          done
+          echo "core=${{ matrix.core }} pin=${{ matrix.pin }} size=$SIZE sha256=$(sha256sum "$SO" | cut -d' ' -f1)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload core artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.core }}-libretro-android
+          path: ${{ env.BUILT_SO }}
+          if-no-files-found: error
+
+  publish:
+    needs: build-core
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # gh needs a git checkout to resolve the repo;
+      # without it the release commands fail with
+      # "not a git repository" (first publish run).
+      - name: Check out repo for gh
+        uses: actions/checkout@v4
+      - name: Download built cores from this run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: '*-libretro-android'
+          path: artifacts
+
+      - name: Build manifest and publish cores release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - << 'PYEOF'
+          import hashlib, json, os
+          # key -> (artifact file, pin, consoles). Pins mirror the
+          # build-core matrix; re-pin all six together, in both.
+          CORES = {
+              "mgba": (
+                  "mgba_libretro_android.so",
+                  "fd9dc5c2cbf234365068855851107e762fc6211b",
+                  ["gb", "gbc", "gba"],
+              ),
+              "fceumm": (
+                  "fceumm_libretro_android.so",
+                  "ac0d00a7fc01166f84c7bac01d1084ebfd2b865e",
+                  ["nes"],
+              ),
+              "snes9x": (
+                  "snes9x_libretro_android.so",
+                  "1bcc369e89f08243e0a462882fb1f3e42e51de3a",
+                  ["snes"],
+              ),
+              "genesis_plus_gx": (
+                  "genesis_plus_gx_libretro_android.so",
+                  "aa74d79634cd230f65cce4180e92688e53883d2f",
+                  ["genesis", "sms", "gg"],
+              ),
+              "swanstation": (
+                  "swanstation_libretro_android.so",
+                  "631f0fb31b809e0f889d7c551fe695788e39c1d3",
+                  ["ps1"],
+              ),
+              "melonds": (
+                  "melonds_libretro_android.so",
+                  "66b5d2634cd0a79030562811e6e05f5532f800ba",
+                  ["ds"],
+              ),
+              "picodrive": (
+                  "picodrive_libretro_android.so",
+                  "1890c2932234c9d30f4cd3851d02228baae8f09e",
+                  ["32x"],
+              ),
+          }
+          entries = []
+          for key, (fname, pin, consoles) in CORES.items():
+              found = []
+              for root, _, files in os.walk("artifacts"):
+                  if fname in files:
+                      found.append(os.path.join(root, fname))
+              assert len(found) == 1, (fname, found)
+              path = found[0]
+              data = open(path, "rb").read()
+              entries.append({
+                  "key": key,
+                  "file": fname,
+                  "size": len(data),
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  "pin": pin,
+                  "consoles": consoles,
+              })
+          entries.sort(key=lambda e: e["key"])
+          with open("cores.json", "w") as f:
+              json.dump({"cores": entries}, f, indent=2)
+              f.write("\n")
+          print("manifest:")
+          print(open("cores.json").read())
+          PYEOF
+          gh release view cores >/dev/null 2>&1 || gh release create cores             --title "Emulator cores"             --notes "Source-built libretro cores for Notscape Mariner, published by the Core builds workflow. The app verifies every download against cores.json before loading it."
+          gh release upload cores artifacts/*/*.so cores.json --clobber

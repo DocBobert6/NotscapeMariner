@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Network security configuration (audit S-M8).
+
+  This is a browser: it must load pages the user asks for over plain
+  HTTP, so cleartext cannot be switched off globally the way a normal
+  app would — the HTTPS-first upgrade plus its confirmation dialog
+  (BrowserScreen) is the user-facing control for that. What CAN be
+  scoped is the app's own trusted traffic: the update and core hosts
+  below are pinned to HTTPS-only as defence in depth (every call site
+  already builds https URLs for them), and download/player code never
+  attaches Cookie or Referer headers to a non-HTTPS request.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+    <!-- App-owned hosts: update checks, core manifests, core files. -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">github.com</domain>
+        <domain includeSubdomains="true">objects.githubusercontent.com</domain>
+    </domain-config>
+</network-security-config>

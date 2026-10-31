@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Notscape Mariner</string>
+    <!-- Audit F13 (prospective rule): all user-visible copy
+         added or changed from here on lives in this file,
+         not inline in composables. WelcomeScreen is the
+         pilot; wholesale migration is NOT approved. -->
+    <string name="welcome_tagline">A reading and media-first private browser. Everything stays on this device - no account, no sync, no telemetry.</string>
+    <string name="welcome_private_title">Private by design</string>
+    <string name="welcome_blocked_title">Ads and trackers blocked</string>
+    <string name="welcome_reading_title">Built for reading</string>
+    <string name="vault_copy_failed">Couldn\'t copy that password.</string>
+    <string name="download_delete_failed">Couldn\'t delete that download.</string>
+    <string name="download_status_retrying">Retrying…</string>
+    <string name="auto_archives_kept">Keeps the %1$d most recent archived runs.</string>
+    <string name="wifi_only_downloads">Wi-Fi only downloads</string>
+</resources>

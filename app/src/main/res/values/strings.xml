@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Notscape Mariner</string>
+    <!-- Audit F13 (prospective rule): all user-visible copy
+         added or changed from here on lives in this file,
+         not inline in composables. WelcomeScreen is the
+         pilot; wholesale migration is NOT approved. -->
+    <string name="welcome_tagline">A reading and media-first private browser. Everything stays on this device - no account, no sync, no telemetry.</string>
+    <string name="welcome_private_title">Private by design</string>
+    <string name="welcome_blocked_title">Ads and trackers blocked</string>
+    <string name="welcome_reading_title">Built for reading</string>
+    <string name="vault_copy_failed">Couldn\'t copy that password.</string>
+    <string name="download_delete_failed">Couldn\'t delete that download.</string>
+    <string name="download_status_retrying">Retrying…</string>
+    <string name="auto_archives_kept">Keeps the %1$d most recent archived runs.</string>
+    <string name="wifi_only_downloads">Wi-Fi only downloads</string>
+    <string name="menu_all_actions">All actions</string>
+    <string name="menu_page_title">Menu</string>
+    <string name="trace_title">Diagnostic trace</string>
+    <string name="trace_intro">Record what you do in the app to a local file, then export it as text. The trace stays on this device until you export it, and page addresses are stored without query strings.</string>
+    <string name="trace_tracing">Tracing… %1$d events</string>
+    <string name="trace_start">Start trace</string>
+    <string name="trace_end">End trace</string>
+    <string name="trace_export">Export as .txt</string>
+    <string name="trace_share_title">Export trace</string>
+</resources>

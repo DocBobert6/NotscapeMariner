@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- System autofill service config (credentials round). No settings
+     activity: the vault screen itself holds the "Autofill in other
+     apps" affordance that opens the system enable screen. -->
+<autofill-service xmlns:android="http://schemas.android.com/apk/res/android" />

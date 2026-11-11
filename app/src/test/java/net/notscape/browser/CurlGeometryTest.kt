@@ -1,0 +1,142 @@
+package net.notscape.browser
+
+import androidx.compose.ui.geometry.Offset
+import net.notscape.browser.ui.constrainCurlFinger
+import net.notscape.browser.ui.foldPolygons
+import net.notscape.browser.ui.compressAroundFold
+import net.notscape.browser.ui.reflectAcross
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class CurlGeometryTest {
+
+    private fun area(poly: List<Offset>): Float {
+        var a = 0f
+        for (i in poly.indices) {
+            val p = poly[i]
+            val q = poly[(i + 1) % poly.size]
+            a += p.x * q.y - q.x * p.y
+        }
+        return kotlin.math.abs(a) / 2f
+    }
+
+    @Test
+    fun noLiftWhenFingerOnCorner() {
+        val (lifted, _, flat) = foldPolygons(
+            100f, 200f, Offset(100f, 0f), Offset(100f, 0f)
+        )
+        assertTrue(lifted.isEmpty())
+        assertEquals(20000f, area(flat), 1f)
+    }
+
+    @Test
+    fun verticalBisectorSplitsEvenly() {
+        // Corner top-right, finger top-left: fold line x = 50.
+        val (lifted, reflected, flat) = foldPolygons(
+            100f, 200f, Offset(100f, 0f), Offset(0f, 0f)
+        )
+        assertEquals(10000f, area(lifted), 1f)
+        assertEquals(10000f, area(flat), 1f)
+        assertEquals(10000f, area(reflected), 1f)
+        assertTrue(lifted.all { it.x >= 49f })
+        assertTrue(reflected.all { it.x <= 51f })
+    }
+
+    @Test
+    fun bottomCornerDragUp() {
+        // Corner bottom-right, finger straight above it:
+        // fold line y = 150, lifted is the bottom strip.
+        val (lifted, _, _) = foldPolygons(
+            100f, 200f, Offset(100f, 200f), Offset(100f, 100f)
+        )
+        assertEquals(5000f, area(lifted), 1f)
+        assertTrue(lifted.all { it.y >= 149f })
+    }
+
+    @Test
+    fun sheetBackCrossesTheSpine() {
+        // Finger dragged past the spine (0.0.989): the
+        // reflected sheet must reach over the other page
+        // (negative x in this page's space) at full area,
+        // not be cut at the gutter.
+        val (lifted, reflected, _) = foldPolygons(
+            100f, 200f, Offset(100f, 0f), Offset(-60f, 0f)
+        )
+        assertEquals(16000f, area(lifted), 1f)
+        assertEquals(16000f, area(reflected), 1f)
+        assertTrue(reflected.all { it.x >= -61f })
+        assertTrue(reflected.any { it.x < 0f })
+    }
+
+    @Test
+    fun compressKeepsFoldLinePoints() {
+        val mid = Offset(50f, 100f)
+        val onFold = listOf(Offset(50f, 0f), Offset(50f, 200f))
+        val out = compressAroundFold(onFold, mid, 0f, 1f, 0.6f)
+        assertEquals(onFold, out)
+    }
+
+    @Test
+    fun compressScalesNormalDistance() {
+        // Fold direction vertical (0,1): a point 40px to the
+        // side of the fold midpoint lands 24px out at k=0.6.
+        val out = compressAroundFold(
+            listOf(Offset(90f, 100f)), Offset(50f, 100f),
+            0f, 1f, 0.6f
+        )
+        assertEquals(74f, out[0].x, 0.01f)
+        assertEquals(100f, out[0].y, 0.01f)
+    }
+
+    @Test
+    fun reflectAcrossVerticalLine() {
+        val r = reflectAcross(
+            Offset(100f, 30f), 50f, 0f, 0f, 1f
+        )
+        assertEquals(0f, r.x, 0.01f)
+        assertEquals(30f, r.y, 0.01f)
+    }
+
+    @Test
+    fun curlFingerInBandPassesThrough() {
+        val corner = Offset(100f, 100f)
+        val finger = Offset(40f, 110f)
+        val out = constrainCurlFinger(
+            corner, finger, intoPositiveX = false
+        )
+        assertEquals(finger.x, out.x, 0.01f)
+        assertEquals(finger.y, out.y, 0.01f)
+    }
+
+    @Test
+    fun curlFingerClampKeepsDistance() {
+        val corner = Offset(100f, 100f)
+        val finger = Offset(40f, 190f)
+        val out = constrainCurlFinger(
+            corner, finger, intoPositiveX = false
+        )
+        val before = kotlin.math.hypot(
+            finger.x - corner.x, finger.y - corner.y
+        )
+        val after = kotlin.math.hypot(
+            out.x - corner.x, out.y - corner.y
+        )
+        assertEquals(before, after, 0.5f)
+        // Clamped to 38 degrees from the into-page axis:
+        // direction 180 - 38 = 142 degrees.
+        assertEquals(14.7f, out.x, 1.5f)
+        assertEquals(166.6f, out.y, 1.5f)
+    }
+
+    @Test
+    fun curlFingerClampLeftCorner() {
+        val corner = Offset(0f, 0f)
+        val finger = Offset(30f, 95f)
+        val out = constrainCurlFinger(
+            corner, finger, intoPositiveX = true
+        )
+        assertEquals(78.5f, out.x, 1.5f)
+        assertEquals(61.3f, out.y, 1.5f)
+    }
+}

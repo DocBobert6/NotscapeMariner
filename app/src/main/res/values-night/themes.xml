@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Night (0.0.99999): the window - and the system
+         splash it feeds - wears the app's dark background
+         from frame zero, so a dark launch never flashes
+         white while the store loads. -->
+    <style name="Theme.Notscape" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:statusBarColor">#1B3A4B</item>
+    </style>
+</resources>

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <cache-path name="updates" path="updates/" />
+    <external-files-path name="movies" path="Movies/" />
+    <!-- Diagnostic trace export (beta.55): timestamped copies only. -->
+    <files-path name="traces" path="traces/" />
+</paths>
